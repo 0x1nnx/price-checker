@@ -20,6 +20,23 @@
                     <button id="btnPc">Компютри</button>
                 </div>
                 <button class="go" id="go">Търси</button>
+                <button class="cp-btn" id="cpBtn" title="CellPhone BG — вход за търговци">
+                    <span class="cp-dot" id="cpDot"></span>CP BG
+                </button>
+            </div>
+
+            <div class="cp-modal" id="cpModal" hidden>
+                <div class="cp-box">
+                    <h3>CellPhone BG — вход за търговци</h3>
+                    <input type="email" id="cpEmail" placeholder="E-mail" autocomplete="username">
+                    <input type="password" id="cpPass" placeholder="Парола" autocomplete="current-password">
+                    <div class="cp-actions">
+                        <button id="cpLogout" class="cp-secondary" hidden>Изход</button>
+                        <button id="cpCancel" class="cp-secondary">Отказ</button>
+                        <button id="cpSubmit" class="cp-primary">Вход</button>
+                    </div>
+                    <div class="cp-msg" id="cpMsg"></div>
+                </div>
             </div>
 
             <div class="status" id="status"></div>

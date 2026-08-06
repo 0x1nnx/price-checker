@@ -14,56 +14,9 @@ from loguru import logger
 from typing import List, Dict, Any
 from playwright.async_api import async_playwright
 
-async def fetch_mobilesentrix_html(client: httpx.AsyncClient, query: str) -> str | None:
-    """Fast Playwright fetcher targeting MobileSentrix catalog DOM."""
-    net_log = logger.bind(component="NETWORK")
-    encoded_query = quote_plus(query.strip())
-    url = f"https://www.mobilesentrix.eu/catalogsearch/result/?q={encoded_query}"
-
-    try:
-        net_log.info("[MobileSentrix EU] Launching Playwright to render search results...")
-        
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800}
-            )
-            
-            # Block non-essential heavy resources
-            await context.route(
-                "**/*",
-                lambda route, request: route.abort()
-                if request.resource_type in ["image", "media", "font"]
-                or "analytics" in request.url
-                or "facebook" in request.url
-                or "google-analytics" in request.url
-                else route.continue_()
-            )
-
-            page = await context.new_page()
-            
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            
-            # Wait for the catalog grid container to render in DOM
-            try:
-                await page.wait_for_selector("#catalog-listing, li.item, a.product-image", timeout=8000)
-            except Exception:
-                net_log.warning("[MobileSentrix EU] Selector timeout, applying 2s fallback delay...")
-                await page.wait_for_timeout(2000)
-
-            html = await page.content()
-            await browser.close()
-            
-            return html
-
-    except Exception as e:
-        net_log.error(f"[MobileSentrix EU] Playwright fetch error: {str(e)}")
-        return None
+# MobileSentrix EU рендерира резултатите от търсенето сървърно, така че минава
+# по стандартния път с fetch_with_retry (виж PHONE_SITES) — без Playwright.
+# Преди тук се вдигаше цял Chromium на всяко търсене: ~26s вместо ~1s.
 
 OLX_HEADERS = {
     "User-Agent": (
@@ -353,6 +306,28 @@ async def fetch_laptopremont_html(client: httpx.AsyncClient, query: str) -> str 
         net_log.error(f"[LaptopRemont] Playwright fetch error: {str(e)}")
         return None
 
+# ---- Cellphone BG търговска сесия (пази се в паметта до рестарт) ----
+_cellphone_session = {"cookies": None, "email": None}
+
+async def fetch_cellphone_html(client: httpx.AsyncClient, query: str) -> str | None:
+    """Търсене в Cellphone BG; ако има запазена търговска сесия, цените са видими."""
+    net_log = logger.bind(component="NETWORK")
+    url = f"https://cellphone-bg.com/search?search={quote_plus(query)}"
+    try:
+        resp = await client.get(
+            url,
+            cookies=_cellphone_session["cookies"],
+            timeout=REQUEST_TIMEOUT,
+            follow_redirects=True,
+        )
+        if resp.status_code == 200 and resp.text:
+            return resp.text
+        net_log.warning(f"[Cellphone BG] Status {resp.status_code}")
+        return None
+    except Exception as e:
+        net_log.error(f"[Cellphone BG] Fetch error: {type(e).__name__} -> {e}")
+        return None
+
 MASTERCLUB_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -461,13 +436,13 @@ PHONE_SITES = [
         "name": "MobileSentrix EU",
         "url": "https://www.mobilesentrix.eu/catalogsearch/result/?q=",
         "selector": "li.item a.product-image, .product-name",
-        "custom_fetch": fetch_mobilesentrix_html,
     },
     #OpenCart
     {
         "name": "Cellphone BG",
         "url": "https://cellphone-bg.com/search?search=",
         "selector": ".product-thumb h4 a, .caption a, .name a, h4 a, .product-title a, a.prod-info",
+        "custom_fetch": fetch_cellphone_html,
     },
     #OpenCart
     {
@@ -601,23 +576,69 @@ def parse_site(html: str, site: dict, search_terms: list[str]) -> list[dict]:
 
         detected_price = ""
 
+        # Cellphone BG: намираме картата на продукта (.products-box) и я ползваме
+        # като граница. Иначе обхождането на родителите стига до страничния блок
+        # "ПРОМОЦИИ" и взима неговата първа цена (напр. 18.91 €) за всеки продукт.
+        cp_card = None
+        if site["name"] == "Cellphone BG":
+            node = link
+            for _ in range(5):
+                node = node.parent
+                if not node or node.name == "[document]":
+                    break
+                if "products-box" in (node.get("class") or []):
+                    cp_card = node
+                    break
+
+            if cp_card is None:
+                continue
+
+            # Неналичните продукти не се показват изобщо.
+            # В резултатите маркерът е <span class="nal-tag tags">НЕНАЛИЧЕН</span>
+            # (празен при наличен), а в продуктовата страница — <span class="product-ok">.
+            nal_text = " ".join(s.get_text(strip=True) for s in cp_card.select("span.nal-tag"))
+            if "НЕНАЛИЧЕН" in nal_text.upper() and not cp_card.select_one(".product-ok"):
+                continue
+
         # 3. Price Extraction
         price_tags = site_price_tags.get(site["name"], [".price", ".price-new"])
-        current_parent = link
 
-        for _ in range(7):
-            current_parent = current_parent.parent
-            if not current_parent or current_parent.name == "[document]":
-                break
+        # Контейнери за търсене на цена: за Cellphone BG само самата карта,
+        # за останалите сайтове — родителите нагоре.
+        if cp_card is not None:
+            containers = [cp_card]
+        else:
+            containers = []
+            current_parent = link
+            for _ in range(7):
+                current_parent = current_parent.parent
+                if not current_parent or current_parent.name == "[document]":
+                    break
+                containers.append(current_parent)
 
+        for depth, current_parent in enumerate(containers):
             found_price_text = ""
             for tag in price_tags:
                 price_elem = current_parent.select_one(tag)
                 if price_elem:
-                    raw_text = price_elem.get_text(strip=True)
+                    # <sup> holds the decimal part (MasterClub: 87<sup>15</sup> € = 87.15 €).
+                    # Insert a dot before it so get_text doesn't glue "8715".
+                    if price_elem.find("sup"):
+                        elem_html = re.sub(r'<sup[^>]*>\s*(\d+)\s*</sup>', r'.\1', str(price_elem))
+                        raw_text = BeautifulSoup(elem_html, "html.parser").get_text(strip=True)
+                    else:
+                        raw_text = price_elem.get_text(strip=True)
                     found_price_text = " ".join(raw_text.split())
                     if found_price_text:
                         break
+
+            # Cellphone BG fallback: цената е свободен текст "4.24 € / 8.29 лв." в картата.
+            # Само в близките родители (depth < 4), за да не хванем чужда цена.
+            if not found_price_text and site["name"] == "Cellphone BG" and depth < 4:
+                parent_text = current_parent.get_text(" ", strip=True)
+                cp_match = re.search(r'\d[\d\s.,]*€\s*/\s*[\d\s.,]*\d\s*лв', parent_text)
+                if cp_match:
+                    found_price_text = cp_match.group(0)
 
             # LaptopRemont table row fallback
             if not found_price_text and site["name"] == "LaptopRemont" and current_parent.name == "tr":
@@ -629,6 +650,11 @@ def parse_site(html: str, site: dict, search_terms: list[str]) -> list[dict]:
             if found_price_text:
                 detected_price = found_price_text
                 break
+
+        # Cellphone BG: без търговски вход сайтът крие цените. Продуктът е стигнал
+        # дотук само ако е наличен, така че показваме наличност вместо цена.
+        if cp_card is not None and not detected_price:
+            detected_price = "НАЛИЧЕН"
 
         # 4. Price Cleanup / Formatting (e.g. 1.50€2.93лв. -> 2.93 лв. / 1.50 €)
         if detected_price:
@@ -805,6 +831,81 @@ async def api_search(
 #                 all_products.extend(res)
 # 
 #         return {"query": query, "count": len(all_products), "results": all_products}
+# ---- Cellphone BG вход за търговци ----
+from pydantic import BaseModel
+
+class CellphoneCreds(BaseModel):
+    email: str
+    password: str
+
+@app.post("/api/cellphone/login")
+async def cellphone_login(creds: CellphoneCreds):
+    """Логва се в cellphone-bg.com и пази сесийните бисквитки в паметта."""
+    api_log = logger.bind(component="API")
+    base = "https://cellphone-bg.com"
+    try:
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=15.0) as client:
+            # 1) Взимаме формата за вход (и евентуални скрити CSRF полета)
+            login_page = await client.get(f"{base}/login")
+            soup = BeautifulSoup(login_page.text, "html.parser")
+
+            form = None
+            for f in soup.find_all("form"):
+                if f.find("input", {"type": "password"}):
+                    form = f
+                    break
+            if not form:
+                return {"ok": False, "message": "Формата за вход не е намерена"}
+
+            # 2) Попълваме полетата динамично (без хардкодирани имена)
+            payload = {}
+            email_filled = False
+            for inp in form.find_all("input"):
+                name = inp.get("name")
+                if not name:
+                    continue
+                itype = (inp.get("type") or "text").lower()
+                if itype == "password":
+                    payload[name] = creds.password
+                elif itype in ("text", "email") and not email_filled:
+                    payload[name] = creds.email
+                    email_filled = True
+                elif itype in ("hidden", "checkbox"):
+                    payload[name] = inp.get("value", "")
+
+            action = urljoin(f"{base}/login", form.get("action") or "/login")
+            await client.post(action, data=payload)
+
+            # 3) Проверка: логнатата страница вече не предлага "ВХОД ЗА ТЪРГОВЦИ"
+            check = await client.get(base)
+            logged = ("изход" in check.text.lower()) or ("ВХОД ЗА ТЪРГОВЦИ" not in check.text)
+
+            if logged:
+                _cellphone_session["cookies"] = client.cookies
+                _cellphone_session["email"] = creds.email
+                _cache.clear()  # старите кеширани резултати са без цени
+                api_log.success(f"[Cellphone BG] Успешен вход като {creds.email}")
+                return {"ok": True, "message": f"Успешен вход: {creds.email}"}
+
+            api_log.warning("[Cellphone BG] Неуспешен вход")
+            return {"ok": False, "message": "Неуспешен вход — проверете e-mail и парола"}
+    except Exception as e:
+        return {"ok": False, "message": f"Грешка: {e}"}
+
+@app.get("/api/cellphone/status")
+async def cellphone_status():
+    return {
+        "logged_in": _cellphone_session["cookies"] is not None,
+        "email": _cellphone_session["email"],
+    }
+
+@app.post("/api/cellphone/logout")
+async def cellphone_logout():
+    _cellphone_session["cookies"] = None
+    _cellphone_session["email"] = None
+    _cache.clear()
+    return {"ok": True}
+
 @app.get("/")
 async def index():
     return FileResponse("static/index.html")

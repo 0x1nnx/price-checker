@@ -1,2 +1,6 @@
 venv/
 debug_masterclub.py
+__pycache__/
+*.pyc
+logs/
+*_debug.html

@@ -12,6 +12,62 @@ function setCat(c) {
 $("go").onclick = run;
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") run(); });
 
+// --- CellPhone BG вход за търговци ---
+async function cpRefreshStatus() {
+    try {
+        const r = await fetch("/api/cellphone/status");
+        const d = await r.json();
+        $("cpDot").classList.toggle("on", d.logged_in);
+        $("cpBtn").title = d.logged_in
+            ? `CellPhone BG: ${d.email}`
+            : "CellPhone BG — вход за търговци";
+        $("cpLogout").hidden = !d.logged_in;
+    } catch {}
+}
+cpRefreshStatus();
+
+$("cpBtn").onclick = () => {
+    $("cpModal").hidden = false;
+    $("cpMsg").textContent = "";
+    $("cpEmail").focus();
+};
+$("cpCancel").onclick = () => { $("cpModal").hidden = true; };
+$("cpModal").onclick = e => { if (e.target === $("cpModal")) $("cpModal").hidden = true; };
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("cpModal").hidden = true; });
+
+$("cpSubmit").onclick = async () => {
+    const email = $("cpEmail").value.trim();
+    const pass = $("cpPass").value;
+    if (!email || !pass) { $("cpMsg").textContent = "Въведи e-mail и парола."; return; }
+
+    $("cpSubmit").disabled = true;
+    $("cpMsg").textContent = "Влизане…";
+    try {
+        const r = await fetch("/api/cellphone/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password: pass })
+        });
+        const d = await r.json();
+        $("cpMsg").textContent = d.message;
+        if (d.ok) {
+            $("cpPass").value = "";
+            cpRefreshStatus();
+            setTimeout(() => { $("cpModal").hidden = true; }, 900);
+        }
+    } catch (e) {
+        $("cpMsg").textContent = "Грешка при заявката: " + e.message;
+    } finally {
+        $("cpSubmit").disabled = false;
+    }
+};
+
+$("cpLogout").onclick = async () => {
+    await fetch("/api/cellphone/logout", { method: "POST" });
+    $("cpMsg").textContent = "Излязохте от CellPhone BG.";
+    cpRefreshStatus();
+};
+
 async function run() {
     const q = $("q").value.trim();
     if (q.length < 2) { $("status").textContent = "Въведи поне 2 символа."; return; }
@@ -33,49 +89,45 @@ async function run() {
     }
 }
 
-function normalizeToEuro(priceStr) {
+function normalizeToEuro(priceStr, url = "") {
     if (!priceStr || priceStr === "N/A") return "";
 
     let str = priceStr.trim().replace(/^Цена\s*:\s*/i, '');
 
-    const masterClubEuroMatch = str.match(/^(\d{3,})\s*€/);
-    if (masterClubEuroMatch && !str.includes('.')) {
-        const rawCents = parseInt(masterClubEuroMatch[1], 10);
-        return (rawCents / 100).toFixed(2) + " €";
-    }
+    // NOTE: MasterClub decimals are handled on the backend now — its prices arrive
+    // as "87.15 € (170.45 лв.)" because <sup> cents get a dot inserted in parse_site().
 
-    const prefixEuroMatch = str.match(/€\s*(\d+[\.,]\d{1,2})/);
-    if (prefixEuroMatch) {
-        const val = parseFloat(prefixEuroMatch[1].replace(',', '.'));
+    // Parses "1 200", "13,50", "782.33" -> number (spaces = thousands, comma = decimal)
+    const parseNum = s => parseFloat(s.replace(/\s/g, '').replace(',', '.'));
+
+    // 1) Amount immediately BEFORE the € sign.
+    //    Handles: "400 € 782,33 лв" (Bazar), "782.33 лв. / 400 €" (OLX),
+    //    "4.24 € / 8.29 лв." (OpenCart shops), "13,50 € 26,40 лв", "1 200 €"
+    let m = str.match(/(\d[\d\s]*(?:[\.,]\d{1,2})?)\s*€/);
+    if (m) {
+        const val = parseNum(m[1]);
         if (!isNaN(val)) return val.toFixed(2) + " €";
     }
 
-    const suffixEuroMatch = str.match(/(\d+[\.,]\d{1,2})\s*€/);
-    if (suffixEuroMatch) {
-        const val = parseFloat(suffixEuroMatch[1].replace(',', '.'));
+    // 2) Amount AFTER the € sign: "€11.50" (MobileSentrix), "€ 12"
+    m = str.match(/€\s*(\d[\d\s]*(?:[\.,]\d{1,2})?)/);
+    if (m) {
+        const val = parseNum(m[1]);
         if (!isNaN(val)) return val.toFixed(2) + " €";
     }
 
-    const intEuroMatch = str.match(/(\d+)\s*€/);
-    if (intEuroMatch) {
-        const val = parseFloat(intEuroMatch[1]);
-        if (!isNaN(val)) return val.toFixed(2) + " €";
+    // 3) BGN only: "264,04 лв", "1 095,26 лв", "820 лв."
+    m = str.match(/(\d[\d\s]*(?:[\.,]\d{1,2})?)\s*лв/i);
+    if (m) {
+        const val = parseNum(m[1]);
+        if (!isNaN(val)) return (val / 1.95583).toFixed(2) + " €";
     }
 
-    const bgnMatch = str.match(/(\d+[\.,]?\d*)\s*лв/i);
-    if (bgnMatch) {
-        const val = parseFloat(bgnMatch[1].replace(',', '.'));
-        if (!isNaN(val)) {
-            return (val / 1.95583).toFixed(2) + " €";
-        }
-    }
-
-    const numMatch = str.match(/\d+[\.,]?\d*/);
-    if (numMatch) {
-        const val = parseFloat(numMatch[0].replace(',', '.'));
-        if (!isNaN(val)) {
-            return (val / 1.95583).toFixed(2) + " €";
-        }
+    // 4) Bare number — assume BGN
+    m = str.match(/\d[\d\s]*(?:[\.,]\d{1,2})?/);
+    if (m) {
+        const val = parseNum(m[0]);
+        if (!isNaN(val)) return (val / 1.95583).toFixed(2) + " €";
     }
 
     return str;
@@ -109,7 +161,8 @@ function formatItemData(it) {
     }
 
     if (url.includes('cellphone-bg.com')) {
-        title = title.replace(/Баркод/, ' Баркод').replace(/Наличен/i, ' Наличен');
+        // "Наличен" отива в badge-а, не в заглавието
+        title = title.replace(/Баркод/, ' Баркод').replace(/\s*Наличен\s*$/i, '');
     }
 
     if (url.includes('bazar.bg')) {
@@ -154,7 +207,7 @@ function formatItemData(it) {
         }
     }
 
-    const displayPrice = normalizeToEuro(price);
+    const displayPrice = normalizeToEuro(price, url);
     const numericPrice = getNumericEuro(displayPrice);
 
     return { displayTitle: title, displayPrice, numericPrice };
@@ -215,8 +268,12 @@ function render(data) {
                 a.target = "_blank";
                 a.rel = "noopener";
 
-                const priceBadge = it._displayPrice 
-                    ? `<span class="price-badge">${esc(it._displayPrice)}</span>` 
+                const badgeClass =
+                    /^неналичен$/i.test(it._displayPrice) ? "price-badge out" :
+                    /^наличен$/i.test(it._displayPrice)   ? "price-badge avail" :
+                    "price-badge";
+                const priceBadge = it._displayPrice
+                    ? `<span class="${badgeClass}">${esc(it._displayPrice)}</span>`
                     : '';
 
                 a.innerHTML = `

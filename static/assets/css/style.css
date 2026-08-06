@@ -129,6 +129,127 @@ input:focus-visible {
     outline-offset: 1px;
 }
 
+/* --- CellPhone BG вход --- */
+
+.cp-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--bg);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 14px;
+    font-size: 0.85rem;
+    font-family: var(--mono);
+    cursor: pointer;
+}
+
+.cp-btn:hover {
+    border-color: var(--accent-dim);
+    color: var(--text);
+}
+
+.cp-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: none;
+}
+
+.cp-dot.on {
+    background: var(--ok);
+    box-shadow: 0 0 6px var(--ok);
+}
+
+.cp-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 20, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+}
+
+.cp-modal[hidden] {
+    display: none;
+}
+
+.cp-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px;
+    width: min(92vw, 360px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.cp-box h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.cp-box input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    outline: none;
+}
+
+.cp-box input:focus {
+    border-color: var(--accent-dim);
+}
+
+.cp-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.cp-primary {
+    background: var(--accent);
+    color: #14102e;
+    font-weight: 700;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 20px;
+    cursor: pointer;
+}
+
+.cp-primary:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
+.cp-secondary {
+    background: var(--bg);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 14px;
+    cursor: pointer;
+}
+
+.cp-secondary:hover {
+    color: var(--text);
+}
+
+.cp-msg {
+    font-size: 0.82rem;
+    color: var(--muted);
+    min-height: 1.2em;
+    font-family: var(--mono);
+}
+
 /* --- статус лента --- */
 
 .status {
@@ -283,6 +404,21 @@ input:focus-visible {
     border-radius: 6px;
     letter-spacing: 0.3px;
     box-shadow: 0 2px 4px rgba(16, 185, 129, 0.2);
+}
+
+/* Наличност (Cellphone BG без вход) */
+.price-badge.avail {
+    background: rgba(70, 209, 154, 0.15);
+    color: var(--ok);
+    box-shadow: none;
+    border: 1px solid rgba(70, 209, 154, 0.4);
+}
+
+.price-badge.out {
+    background: rgba(255, 107, 122, 0.12);
+    color: var(--err);
+    box-shadow: none;
+    border: 1px solid rgba(255, 107, 122, 0.35);
 }
 
 .empty,
