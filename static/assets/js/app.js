@@ -1,6 +1,17 @@
 let category = "phone";
 const $ = id => document.getElementById(id);
 
+// --- Режим: търсене на части / калкулатор за ремонт ---
+$("modeSearch").onclick = () => setMode("search");
+$("modeCalc").onclick   = () => setMode("calc");
+function setMode(m) {
+    $("modeSearch").classList.toggle("active", m === "search");
+    $("modeCalc").classList.toggle("active", m === "calc");
+    $("viewSearch").hidden = m !== "search";
+    $("viewCalc").hidden   = m !== "calc";
+    if (m === "calc") loadCatalog();
+}
+
 $("btnPhone").onclick = () => setCat("phone");
 $("btnPc").onclick    = () => setCat("pc");
 function setCat(c) {
@@ -295,3 +306,159 @@ function render(data) {
 
 const esc = s => String(s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// --- Калкулатор за цена на ремонт ---
+
+let calcCatalog = null;
+
+/** Каталозите се дърпат веднъж при първото отваряне на таба. */
+async function loadCatalog() {
+    if (calcCatalog) return;
+    try {
+        const r = await fetch("/api/pricing/catalog");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        calcCatalog = await r.json();
+        renderCatalog();
+    } catch (e) {
+        $("calcMsg").textContent = "Каталогът не се зареди: " + e.message;
+    }
+}
+
+function renderCatalog() {
+    $("calcDevice").innerHTML = calcCatalog.devices.map(d =>
+        `<option value="${esc(d.key)}">${esc(d.brand)} ${esc(d.model)} — ×${d.factor.toFixed(2)}</option>`
+    ).join("");
+
+    $("calcRepairs").innerHTML = calcCatalog.repairs.map(r => `
+        <label class="chk">
+            <input type="checkbox" name="repair" value="${esc(r.key)}">
+            <span class="chk-main">${esc(r.name)}</span>
+            <span class="chk-meta">${r.base_labor} € · ${r.minutes} мин</span>
+        </label>`).join("");
+
+    $("calcConditions").innerHTML = calcCatalog.conditions.map(c => `
+        <label class="chk">
+            <input type="checkbox" name="condition" value="${esc(c.key)}">
+            <span class="chk-main">${esc(c.question)}</span>
+            <span class="chk-meta">+${Math.round(c.surcharge * 100)}%</span>
+        </label>`).join("");
+}
+
+const checkedValues = name =>
+    [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
+
+$("calcGo").onclick = async () => {
+    const repairs = checkedValues("repair");
+    if (!repairs.length) {
+        $("calcMsg").textContent = "Избери поне една операция.";
+        $("calcResult").innerHTML = "";
+        return;
+    }
+
+    const num = id => parseFloat($(id).value) || 0;
+    const manual = $("calcManual").value.trim();
+
+    $("calcGo").disabled = true;
+    $("calcMsg").textContent = "Изчисляване…";
+    try {
+        const r = await fetch("/api/pricing/quote", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                repairs,
+                device: $("calcDevice").value,
+                conditions: checkedValues("condition"),
+                parts_total: num("calcParts"),
+                extras: num("calcExtras"),
+                discount: num("calcDiscount"),
+                manual_labor: manual === "" ? null : parseFloat(manual),
+            })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+        $("calcMsg").textContent = "";
+        renderQuote(d);
+    } catch (e) {
+        $("calcMsg").textContent = "Грешка: " + e.message;
+        $("calcResult").innerHTML = "";
+    } finally {
+        $("calcGo").disabled = false;
+    }
+};
+
+$("calcReset").onclick = () => {
+    document.querySelectorAll('#viewCalc input[type="checkbox"]').forEach(i => { i.checked = false; });
+    ["calcParts", "calcExtras", "calcDiscount"].forEach(id => { $(id).value = "0"; });
+    $("calcManual").value = "";
+    $("calcMsg").textContent = "";
+    $("calcResult").innerHTML = "";
+};
+
+function renderQuote(q) {
+    // Защо трудът е такъв: при едно разглобяване втората операция се плаща
+    // 50%, третата и следващите 30% — затова показваме и тежестта.
+    const rows = q.lines.map(l => {
+        const cap = l.over_max ? '<span class="cap over">таван</span>'
+                  : l.clamped_to_min ? '<span class="cap min">минимум</span>' : "";
+        return `
+            <tr>
+                <td>${esc(l.name)}${cap}</td>
+                <td class="num">${l.base_labor}</td>
+                <td class="num">${l.raw_labor.toFixed(2)}</td>
+                <td class="num">${l.labor.toFixed(2)}</td>
+                <td class="num">×${l.weight.toFixed(2)}</td>
+                <td class="num strong">${l.applied_labor.toFixed(2)}</td>
+            </tr>`;
+    }).join("");
+
+    const conds = q.conditions.length
+        ? q.conditions.map(c => `<li>${esc(c.question)} <b>+${Math.round(c.surcharge * 100)}%</b></li>`).join("")
+        : "<li>Няма отметнати — устройството е в изправност</li>";
+
+    const approval = q.requires_approval
+        ? `<div class="quote-warn">
+               <b>Иска одобрение от управител</b>
+               <ul>${q.approval_reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+           </div>`
+        : "";
+
+    $("calcResult").innerHTML = `
+        <div class="site-card">
+            <div class="site-head">
+                <span class="dot ${q.requires_approval ? "err" : "ok"}"></span>
+                <h2>${esc(q.device.brand)} ${esc(q.device.model)}</h2>
+                <span class="count">×${q.device_factor.toFixed(2)} устройство</span>
+                <span class="count">×${q.condition_factor.toFixed(2)} състояние</span>
+                <span class="meta">${q.estimated_minutes} мин</span>
+            </div>
+            <div class="quote-body">
+                <table class="quote-table">
+                    <thead>
+                        <tr>
+                            <th>Операция</th><th class="num">Базов</th><th class="num">Изчислен</th>
+                            <th class="num">След лимит</th><th class="num">Тежест</th><th class="num">Труд</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+
+                <ul class="quote-conds">${conds}</ul>
+
+                <div class="quote-sums">
+                    <div><span>Препоръчан труд</span><b>${q.suggested_labor} €</b></div>
+                    <div><span>Свободна корекция</span><b>${q.manual_range[0]}–${q.manual_range[1]} €</b></div>
+                    <div><span>Начислен труд</span><b>${q.labor} €</b></div>
+                    <div><span>Части</span><b>${q.parts_total.toFixed(2)} €</b></div>
+                    <div><span>Допълнителни</span><b>${q.extras.toFixed(2)} €</b></div>
+                    <div><span>Отстъпка</span><b>−${q.discount.toFixed(2)} €</b></div>
+                </div>
+
+                ${approval}
+
+                <div class="quote-final">
+                    <span>Крайна цена</span>
+                    <b>${q.final_price.toFixed(2)} €</b>
+                </div>
+            </div>
+        </div>`;
+}

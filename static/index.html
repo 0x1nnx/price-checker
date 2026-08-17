@@ -13,17 +13,77 @@
                 <div class="sub">търсене при партньори — паралелно, всички сайтове наведнъж</div>
             </header>
 
-            <div class="searchbar">
-                <input type="text" id="q" placeholder="Модел или част — напр. iPhone 13 дисплей" autofocus>
-                <div class="seg" role="group" aria-label="Категория">
-                    <button id="btnPhone" class="active">Телефони</button>
-                    <button id="btnPc">Компютри</button>
-                </div>
-                <button class="go" id="go">Търси</button>
-                <button class="cp-btn" id="cpBtn" title="CellPhone BG — вход за търговци">
-                    <span class="cp-dot" id="cpDot"></span>CP BG
-                </button>
+            <div class="modes" role="group" aria-label="Режим">
+                <button id="modeSearch" class="active">Търсене на части</button>
+                <button id="modeCalc">Калкулатор за ремонт</button>
             </div>
+
+            <section id="viewSearch">
+                <div class="searchbar">
+                    <input type="text" id="q" placeholder="Модел или част — напр. iPhone 13 дисплей" autofocus>
+                    <div class="seg" role="group" aria-label="Категория">
+                        <button id="btnPhone" class="active">Телефони</button>
+                        <button id="btnPc">Компютри</button>
+                    </div>
+                    <button class="go" id="go">Търси</button>
+                    <button class="cp-btn" id="cpBtn" title="CellPhone BG — вход за търговци">
+                        <span class="cp-dot" id="cpDot"></span>CP BG
+                    </button>
+                </div>
+
+                <div class="status" id="status"></div>
+                <div id="results"></div>
+                <div class="hint" id="hint">Въведи модел и натисни „Търси“ — резултатите от всички сайтове идват заедно за няколко секунди.</div>
+            </section>
+
+            <section id="viewCalc" hidden>
+                <div class="calc">
+                    <div class="calc-row">
+                        <div class="calc-field grow">
+                            <label for="calcDevice">Устройство</label>
+                            <select id="calcDevice"></select>
+                        </div>
+                    </div>
+
+                    <fieldset class="calc-group">
+                        <legend>Какъв е ремонтът?</legend>
+                        <div class="chk-grid" id="calcRepairs"></div>
+                    </fieldset>
+
+                    <fieldset class="calc-group">
+                        <legend>Състояние на устройството</legend>
+                        <div class="chk-list" id="calcConditions"></div>
+                    </fieldset>
+
+                    <div class="calc-row">
+                        <div class="calc-field">
+                            <label for="calcParts">Части (€)</label>
+                            <input type="number" id="calcParts" min="0" step="0.01" value="0">
+                        </div>
+                        <div class="calc-field">
+                            <label for="calcExtras">Допълнителни услуги (€)</label>
+                            <input type="number" id="calcExtras" min="0" step="0.01" value="0">
+                        </div>
+                        <div class="calc-field">
+                            <label for="calcDiscount">Отстъпка (€)</label>
+                            <input type="number" id="calcDiscount" min="0" step="0.01" value="0">
+                        </div>
+                        <div class="calc-field">
+                            <label for="calcManual">Ръчна цена на труда (€)</label>
+                            <input type="number" id="calcManual" min="0" step="1" placeholder="по подразбиране">
+                        </div>
+                    </div>
+
+                    <div class="calc-actions">
+                        <button class="go" id="calcGo">Изчисли цената</button>
+                        <button class="cp-secondary" id="calcReset">Изчисти</button>
+                    </div>
+
+                    <div class="calc-msg" id="calcMsg"></div>
+                </div>
+
+                <div id="calcResult"></div>
+            </section>
 
             <div class="cp-modal" id="cpModal" hidden>
                 <div class="cp-box">
@@ -38,10 +98,6 @@
                     <div class="cp-msg" id="cpMsg"></div>
                 </div>
             </div>
-
-            <div class="status" id="status"></div>
-            <div id="results"></div>
-            <div class="hint" id="hint">Въведи модел и натисни „Търси“ — резултатите от всички сайтове идват заедно за няколко секунди.</div>
         </div>
 
         <script src="/static/assets/js/app.js"></script>

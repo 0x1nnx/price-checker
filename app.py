@@ -7,10 +7,12 @@ from urllib.parse import urljoin, quote_plus
 
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+
+import pricing
 from typing import List, Dict, Any
 from playwright.async_api import async_playwright
 
@@ -832,7 +834,7 @@ async def api_search(
 # 
 #         return {"query": query, "count": len(all_products), "results": all_products}
 # ---- Cellphone BG вход за търговци ----
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class CellphoneCreds(BaseModel):
     email: str
@@ -905,6 +907,47 @@ async def cellphone_logout():
     _cellphone_session["email"] = None
     _cache.clear()
     return {"ok": True}
+
+# ---- Калкулатор за цена на ремонт (pricing.py) ----
+
+class QuoteRequest(BaseModel):
+    repairs: list[str]
+    device: str = "generic"
+    conditions: list[str] = Field(default_factory=list)
+    parts_total: float = 0.0
+    extras: float = 0.0
+    discount: float = 0.0
+    manual_labor: float | None = None
+
+@app.get("/api/pricing/catalog")
+async def pricing_catalog():
+    """Операции, устройства и въпроси за състоянието — за падащите менюта."""
+    return pricing.catalog()
+
+@app.post("/api/pricing/quote")
+async def pricing_quote(req: QuoteRequest):
+    """Изчислява препоръчана цена по отговорите на служителя."""
+    api_log = logger.bind(component="API")
+    try:
+        result = pricing.quote(
+            repairs=req.repairs,
+            device=req.device,
+            conditions=req.conditions,
+            parts_total=req.parts_total,
+            extras=req.extras,
+            discount=req.discount,
+            manual_labor=req.manual_labor,
+        )
+    except ValueError as e:
+        # Празен или непознат ключ на операция — грешка на клиента, не на сървъра.
+        api_log.warning(f"[Pricing] Невалидна заявка: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    api_log.success(
+        f"[Pricing] {req.device} · {'+'.join(req.repairs)} -> "
+        f"труд {result['labor']} €, крайна {result['final_price']} €"
+    )
+    return result
 
 @app.get("/")
 async def index():
