@@ -1,17 +1,6 @@
 let category = "phone";
 const $ = id => document.getElementById(id);
 
-// --- Режим: търсене на части / калкулатор за ремонт ---
-$("modeSearch").onclick = () => setMode("search");
-$("modeCalc").onclick   = () => setMode("calc");
-function setMode(m) {
-    $("modeSearch").classList.toggle("active", m === "search");
-    $("modeCalc").classList.toggle("active", m === "calc");
-    $("viewSearch").hidden = m !== "search";
-    $("viewCalc").hidden   = m !== "calc";
-    if (m === "calc") loadCatalog();
-}
-
 $("btnPhone").onclick = () => setCat("phone");
 $("btnPc").onclick    = () => setCat("pc");
 function setCat(c) {
@@ -78,6 +67,123 @@ $("cpLogout").onclick = async () => {
     $("cpMsg").textContent = "Излязохте от CellPhone BG.";
     cpRefreshStatus();
 };
+
+// --- Цена на ремонта по цената на частта ---
+// Формулата живее в pricing.py; тук се дърпат само параметрите ѝ, за да няма
+// два записа на едни и същи числа.
+let displayFormula = null;
+
+async function loadDisplayFormula() {
+    try {
+        const r = await fetch("/api/pricing/display-formula");
+        if (r.ok) displayFormula = await r.json();
+    } catch {}
+}
+loadDisplayFormula();
+
+/**
+ * Дали намереният резултат наистина е дисплей.
+ *
+ * Много аксесоари носят думата „дисплей“ в заглавието си — протектори,
+ * стикери, лепенки — а за тях цена на ремонт е безсмислена. Затова
+ * отрицателният списък е водещ: щом заглавието съдържа някоя от неговите
+ * думи, резултатът отпада независимо от останалото.
+ */
+function isDisplayItem(title) {
+    if (!displayFormula || !title) return false;
+    const low = title.toLowerCase();
+
+    // Латинските думи се търсят по граница, за да не улучат части от
+    // артикулни номера; кирилските — като подниз, заради членуването
+    // („протектор“ да хваща и „протектори“, „протекторът“).
+    const hit = word => /^[Ѐ-ӿ]/.test(word)
+        ? low.includes(word)
+        : new RegExp(`\\b${word}\\b`, "i").test(low);
+
+    if (displayFormula.exclude_keywords.some(hit)) return false;
+    return displayFormula.keywords.some(hit);
+}
+
+/**
+ * Класът, в който попада дисплей с тази цена. Класовете се четат отгоре
+ * надолу и печели първият, в чиято граница влиза цената; max_part === null
+ * означава „без горна граница“.
+ */
+function displayTier(partPrice) {
+    if (!displayFormula || !(partPrice > 0)) return null;
+    return displayFormula.tiers.find(
+        t => t.max_part === null || partPrice <= t.max_part
+    ) || null;
+}
+
+/**
+ * Крайна цена на ремонта за дисплей с дадена цена на частта:
+ *     множител × част + 30 € + 10% от частта, но не по-малко от 50 €
+ * Множителят идва от класа: 2.0 до 50 €, 1.5 до 100 €, 1.1 над 100 €.
+ * Връща null, ако частта е без валидна цена.
+ */
+function repairPrice(partPrice, newPhonePrice) {
+    if (!isFinite(partPrice)) return null;
+    const tier = displayTier(partPrice);
+    if (!tier) return null;
+
+    let price = partPrice * tier.multiplier
+              + displayFormula.fixed
+              + partPrice * displayFormula.pct;
+    price = Math.max(price, displayFormula.min_price);
+
+    // Таван: половината от цената на нов телефон от същия модел. Налага се
+    // последен, така че при евтин апарат бие и минимума — по-логично е
+    // ремонтът да падне под 50 €, отколкото да мине половината от телефона.
+    if (newPhonePrice > 0) {
+        price = Math.min(price, newPhonePrice * displayFormula.max_price_pct);
+    }
+    return price;
+}
+
+// Цени на нови телефони по модел: number = намерена, null = моделът не се
+// продава нов (тогава таван няма), undefined = още не е питано.
+let newPhonePrices = {};
+
+/**
+ * Дърпа цените за моделите на показаните резултати и пренанася баджовете.
+ *
+ * Прави се СЛЕД рисуването, защото заявките към магазина траят секунди —
+ * резултатите излизат веднага, а таванът се прилага, щом пристигне.
+ */
+async function applyPriceCaps(items) {
+    const models = [...new Set(
+        items.filter(it => it._isDisplay && it.model).map(it => it.model)
+    )].filter(m => !(m in newPhonePrices));
+
+    if (!models.length) return;
+
+    try {
+        const r = await fetch("/api/phone-prices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ models: models.slice(0, 40) })
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        Object.assign(newPhonePrices, d.prices);
+    } catch {
+        return;   // без цени просто остава без таван
+    }
+
+    for (const it of items) {
+        if (!it._badge) continue;
+        const capped = repairPrice(it._numericPrice, newPhonePrices[it.model]);
+        if (capped === null) continue;
+        const wasCapped = capped < it._repairUncapped - 0.005;
+        it._badge.innerHTML =
+            `<span class="repair-badge-label">ремонт</span>${capped.toFixed(2)} €`;
+        it._badge.classList.toggle("capped", wasCapped);
+        it._badge.title = wasCapped
+            ? `Таван: половината от цената на нов ${it.model} (${newPhonePrices[it.model].toFixed(2)} €)`
+            : "Смяна на дисплей: множител × част + 30 € + 10% от частта";
+    }
+}
 
 async function run() {
     const q = $("q").value.trim();
@@ -225,240 +331,85 @@ function formatItemData(it) {
 }
 
 function render(data) {
-    const total = data.results.reduce((n, s) => n + s.items.length, 0);
-    $("status").innerHTML =
-        `Готово: <b>${total}</b> резултата` +
-        (data.cached ? " · от кеша (мигновено)" : ` · ${data.total_seconds}s`);
+    // Всички сайтове се сливат в един общ списък — източникът не се показва
+    // отделно, вижда се само URL-то на всеки резултат.
+    const items = [];
+    let failedSources = 0;
 
-    // Process items and attach computed price metrics
     for (const s of data.results) {
+        if (!s.ok) { failedSources++; continue; }
         for (const it of s.items) {
             const formatted = formatItemData(it);
             it._displayTitle = formatted.displayTitle;
             it._displayPrice = formatted.displayPrice;
             it._numericPrice = formatted.numericPrice;
+            items.push(it);
         }
-
-        // Sort items inside each site card: lowest price -> highest price
-        s.items.sort((a, b) => a._numericPrice - b._numericPrice);
-
-        // Record site minimum price for site-card ordering
-        s._minPrice = s.items.length > 0 ? s.items[0]._numericPrice : Infinity;
     }
 
-    // Sort site cards by their lowest available price
-    const sorted = [...data.results].sort((a, b) => a._minPrice - b._minPrice);
+    // Общо подреждане: от най-ниска към най-висока цена.
+    // Позициите без валидна цена получават Infinity и падат най-отдолу.
+    items.sort((a, b) => a._numericPrice - b._numericPrice);
 
-    const frag = document.createDocumentFragment();
+    $("status").innerHTML =
+        `Готово: <b>${items.length}</b> резултата` +
+        (data.cached ? " · от кеша (мигновено)" : ` · ${data.total_seconds}s`) +
+        (failedSources ? ` · ${failedSources} източника не отговориха` : "");
 
-    for (const s of sorted) {
-        const card = document.createElement("div");
-        card.className = "site-card";
+    const card = document.createElement("div");
+    card.className = "site-card";
 
-        const head = document.createElement("div");
-        head.className = "site-head";
-        head.innerHTML =
-            `<span class="dot ${s.ok ? "ok" : "err"}"></span>` +
-            `<h2>${esc(s.site)}</h2>` +
-            `<span class="count">${s.items.length}</span>` +
-            `<span class="meta">${s.seconds ?? "–"}s</span>`;
-        card.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "site-body";
 
-        const body = document.createElement("div");
-        body.className = "site-body";
+    if (items.length === 0) {
+        body.innerHTML = `<div class="empty">Няма намерени резултати</div>`;
+    } else {
+        for (const it of items) {
+            const a = document.createElement("a");
+            a.className = "item";
+            a.href = it.url;
+            a.target = "_blank";
+            a.rel = "noopener";
 
-        if (!s.ok) {
-            body.innerHTML = `<div class="error">${esc(s.error || "Грешка")}</div>`;
-        } else if (s.items.length === 0) {
-            body.innerHTML = `<div class="empty">Няма намерени резултати</div>`;
-        } else {
-            for (const it of s.items) {
-                const a = document.createElement("a");
-                a.className = "item";
-                a.href = it.url;
-                a.target = "_blank";
-                a.rel = "noopener";
+            const badgeClass =
+                /^неналичен$/i.test(it._displayPrice) ? "price-badge out" :
+                /^наличен$/i.test(it._displayPrice)   ? "price-badge avail" :
+                "price-badge";
+            const priceBadge = it._displayPrice
+                ? `<span class="${badgeClass}">${esc(it._displayPrice)}</span>`
+                : '';
 
-                const badgeClass =
-                    /^неналичен$/i.test(it._displayPrice) ? "price-badge out" :
-                    /^наличен$/i.test(it._displayPrice)   ? "price-badge avail" :
-                    "price-badge";
-                const priceBadge = it._displayPrice
-                    ? `<span class="${badgeClass}">${esc(it._displayPrice)}</span>`
-                    : '';
+            it._isDisplay = isDisplayItem(it._displayTitle);
+            // Рисува се без таван; той се прилага в applyPriceCaps, щом
+            // цените на новите телефони пристигнат.
+            const repair = it._isDisplay ? repairPrice(it._numericPrice) : null;
+            it._repairUncapped = repair;
 
-                a.innerHTML = `
-                    <div class="item-info">
-                        <span class="item-title">${esc(it._displayTitle)}</span>
-                        <span class="u">${esc(it.url)}</span>
-                    </div>
-                    ${priceBadge}
-                `;
+            const repairBadge = repair !== null
+                ? `<span class="repair-badge" title="Смяна на дисплей: множител × част + 30 € + 10% от частта">
+                       <span class="repair-badge-label">ремонт</span>${repair.toFixed(2)} €
+                   </span>`
+                : '';
 
-                body.appendChild(a);
-            }
+            a.innerHTML = `
+                <div class="item-info">
+                    <span class="item-title">${esc(it._displayTitle)}</span>
+                    <span class="u">${esc(it.url)}</span>
+                </div>
+                <div class="item-prices">${priceBadge}${repairBadge}</div>
+            `;
+
+            it._badge = a.querySelector(".repair-badge");
+            body.appendChild(a);
         }
-        card.appendChild(body);
-        frag.appendChild(card);
     }
-    $("results").appendChild(frag);
+
+    card.appendChild(body);
+    $("results").appendChild(card);
+
+    applyPriceCaps(items);
 }
 
 const esc = s => String(s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-// --- Калкулатор за цена на ремонт ---
-
-let calcCatalog = null;
-
-/** Каталозите се дърпат веднъж при първото отваряне на таба. */
-async function loadCatalog() {
-    if (calcCatalog) return;
-    try {
-        const r = await fetch("/api/pricing/catalog");
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        calcCatalog = await r.json();
-        renderCatalog();
-    } catch (e) {
-        $("calcMsg").textContent = "Каталогът не се зареди: " + e.message;
-    }
-}
-
-function renderCatalog() {
-    $("calcDevice").innerHTML = calcCatalog.devices.map(d =>
-        `<option value="${esc(d.key)}">${esc(d.brand)} ${esc(d.model)} — ×${d.factor.toFixed(2)}</option>`
-    ).join("");
-
-    $("calcRepairs").innerHTML = calcCatalog.repairs.map(r => `
-        <label class="chk">
-            <input type="checkbox" name="repair" value="${esc(r.key)}">
-            <span class="chk-main">${esc(r.name)}</span>
-            <span class="chk-meta">${r.base_labor} € · ${r.minutes} мин</span>
-        </label>`).join("");
-
-    $("calcConditions").innerHTML = calcCatalog.conditions.map(c => `
-        <label class="chk">
-            <input type="checkbox" name="condition" value="${esc(c.key)}">
-            <span class="chk-main">${esc(c.question)}</span>
-            <span class="chk-meta">+${Math.round(c.surcharge * 100)}%</span>
-        </label>`).join("");
-}
-
-const checkedValues = name =>
-    [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
-
-$("calcGo").onclick = async () => {
-    const repairs = checkedValues("repair");
-    if (!repairs.length) {
-        $("calcMsg").textContent = "Избери поне една операция.";
-        $("calcResult").innerHTML = "";
-        return;
-    }
-
-    const num = id => parseFloat($(id).value) || 0;
-    const manual = $("calcManual").value.trim();
-
-    $("calcGo").disabled = true;
-    $("calcMsg").textContent = "Изчисляване…";
-    try {
-        const r = await fetch("/api/pricing/quote", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                repairs,
-                device: $("calcDevice").value,
-                conditions: checkedValues("condition"),
-                parts_total: num("calcParts"),
-                extras: num("calcExtras"),
-                discount: num("calcDiscount"),
-                manual_labor: manual === "" ? null : parseFloat(manual),
-            })
-        });
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-        $("calcMsg").textContent = "";
-        renderQuote(d);
-    } catch (e) {
-        $("calcMsg").textContent = "Грешка: " + e.message;
-        $("calcResult").innerHTML = "";
-    } finally {
-        $("calcGo").disabled = false;
-    }
-};
-
-$("calcReset").onclick = () => {
-    document.querySelectorAll('#viewCalc input[type="checkbox"]').forEach(i => { i.checked = false; });
-    ["calcParts", "calcExtras", "calcDiscount"].forEach(id => { $(id).value = "0"; });
-    $("calcManual").value = "";
-    $("calcMsg").textContent = "";
-    $("calcResult").innerHTML = "";
-};
-
-function renderQuote(q) {
-    // Защо трудът е такъв: при едно разглобяване втората операция се плаща
-    // 50%, третата и следващите 30% — затова показваме и тежестта.
-    const rows = q.lines.map(l => {
-        const cap = l.over_max ? '<span class="cap over">таван</span>'
-                  : l.clamped_to_min ? '<span class="cap min">минимум</span>' : "";
-        return `
-            <tr>
-                <td>${esc(l.name)}${cap}</td>
-                <td class="num">${l.base_labor}</td>
-                <td class="num">${l.raw_labor.toFixed(2)}</td>
-                <td class="num">${l.labor.toFixed(2)}</td>
-                <td class="num">×${l.weight.toFixed(2)}</td>
-                <td class="num strong">${l.applied_labor.toFixed(2)}</td>
-            </tr>`;
-    }).join("");
-
-    const conds = q.conditions.length
-        ? q.conditions.map(c => `<li>${esc(c.question)} <b>+${Math.round(c.surcharge * 100)}%</b></li>`).join("")
-        : "<li>Няма отметнати — устройството е в изправност</li>";
-
-    const approval = q.requires_approval
-        ? `<div class="quote-warn">
-               <b>Иска одобрение от управител</b>
-               <ul>${q.approval_reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul>
-           </div>`
-        : "";
-
-    $("calcResult").innerHTML = `
-        <div class="site-card">
-            <div class="site-head">
-                <span class="dot ${q.requires_approval ? "err" : "ok"}"></span>
-                <h2>${esc(q.device.brand)} ${esc(q.device.model)}</h2>
-                <span class="count">×${q.device_factor.toFixed(2)} устройство</span>
-                <span class="count">×${q.condition_factor.toFixed(2)} състояние</span>
-                <span class="meta">${q.estimated_minutes} мин</span>
-            </div>
-            <div class="quote-body">
-                <table class="quote-table">
-                    <thead>
-                        <tr>
-                            <th>Операция</th><th class="num">Базов</th><th class="num">Изчислен</th>
-                            <th class="num">След лимит</th><th class="num">Тежест</th><th class="num">Труд</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rows}</tbody>
-                </table>
-
-                <ul class="quote-conds">${conds}</ul>
-
-                <div class="quote-sums">
-                    <div><span>Препоръчан труд</span><b>${q.suggested_labor} €</b></div>
-                    <div><span>Свободна корекция</span><b>${q.manual_range[0]}–${q.manual_range[1]} €</b></div>
-                    <div><span>Начислен труд</span><b>${q.labor} €</b></div>
-                    <div><span>Части</span><b>${q.parts_total.toFixed(2)} €</b></div>
-                    <div><span>Допълнителни</span><b>${q.extras.toFixed(2)} €</b></div>
-                    <div><span>Отстъпка</span><b>−${q.discount.toFixed(2)} €</b></div>
-                </div>
-
-                ${approval}
-
-                <div class="quote-final">
-                    <span>Крайна цена</span>
-                    <b>${q.final_price.toFixed(2)} €</b>
-                </div>
-            </div>
-        </div>`;
-}

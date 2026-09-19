@@ -433,6 +433,151 @@ PC_SITES = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Цена на нов телефон — за тавана на ремонта (половината от нея).
+#
+# Сайтовете с части не продават цели телефони: търсене за „iPhone 13“ в тях
+# връща магнити, сим тарелки и калъфи, но нито един апарат. Затова цената на
+# нов телефон се тегли отделно, от магазин за телефони.
+#
+# eMAG е единственият проверен източник, който сервира цените в HTML-а —
+# Технополис и Техномаркет ги дорисуват с JavaScript, а Ardes връща 403.
+# ---------------------------------------------------------------------------
+NEW_PHONE_SHOP = {
+    "name": "eMAG",
+    "url": "https://www.emag.bg/search/{query}",
+    "card": "div.card-item",
+    "title": "a.card-v2-title, h2 a, a[data-zone=title]",
+    "price": "p.product-new-price, .product-new-price",
+}
+
+IPHONE_RE = re.compile(r"iphone\s*(\d{1,2}|se)\s*(pro\s*max|pro|plus|mini)?", re.I)
+GALAXY_RE = re.compile(r"galaxy\s*([a-z]\d{1,3})\s*(ultra|plus|fe)?", re.I)
+SAMSUNG_CODE_RE = re.compile(
+    r"samsung\s+(?:sm-\w+\s*)?([a-z]\d{1,3})\s*(ultra|plus|fe)?", re.I
+)
+
+
+def _model_suffix(raw: str | None) -> str:
+    return re.sub(r"\s+", " ", raw).strip().title() if raw else ""
+
+
+def extract_phone_model(title: str) -> str | None:
+    """Моделът телефон, за който е предназначена частта.
+
+    „ZY Дисплей за iPhone 13 / InCell, HD+“ -> „iPhone 13“
+    „Samsung A51 A515 ORIGINAL LCD Дисплей“ -> „Samsung Galaxy A51“
+
+    Нарочно е прост подбор по шаблон: заглавията са хаотични и пълен разбор
+    не си струва. Върне ли None, за тази част просто няма таван.
+    """
+    text = title or ""
+
+    m = IPHONE_RE.search(text)
+    if m:
+        base = m.group(1)
+        base = base.upper() if base.lower() == "se" else base
+        return f"iPhone {base} {_model_suffix(m.group(2))}".strip()
+
+    for pattern in (GALAXY_RE, SAMSUNG_CODE_RE):
+        m = pattern.search(text)
+        if m:
+            return f"Samsung Galaxy {m.group(1).upper()} {_model_suffix(m.group(2))}".strip()
+
+    return None
+
+
+# Аксесоарите сочат същия модел, но с дребна цена, която сваля тавана до
+# безсмислица. Пазят три независими проверки, защото една не стигна:
+# „Калъф за мобилен телефон MagSafe, Съвместим със iPhone 11 Pro Max“ за
+# 2.76 € мина през търсене на думата „мобилен телефон“ някъде в заглавието
+# и направи тавана 1.38 €.
+#
+# 1) Заглавието трябва да ЗАПОЧВА с вида на стоката. eMAG пише телефоните
+#    като „Смартфон Apple iPhone 15, 128GB“, а аксесоарите като „Калъф за…“.
+PHONE_PRODUCT_WORDS = ("смартфон", "мобилен телефон", "smartphone", "mobile phone")
+
+# 2) Думи, които издават аксесоар. „съвместим с/със“ е най-силната — апарат
+#    никога не е „съвместим“ със себе си.
+NON_PHONE_WORDS = (
+    "съвместим", "калъф", "кейс", "протектор", "стикер", "лепенка", "фолио",
+    "зарядно", "кабел", "адаптер", "слушалки", "държач", "стойка", "гръб",
+    "case", "cover", "charger", "adapter", "compatible",
+)
+
+# 3) Долен праг на разума: нов телефон под тази цена не е телефон.
+MIN_NEW_PHONE_PRICE = 40.0
+
+
+def _looks_like_new_phone(name: str) -> bool:
+    low = name.strip().lower()
+    if not low.startswith(PHONE_PRODUCT_WORDS):
+        return False
+    return not any(w in low for w in NON_PHONE_WORDS)
+
+
+def _parse_shop_price(raw: str) -> float | None:
+    """„1.199 , 99 €“ -> 1199.99 (eMAG разделя хилядните с точка и стотинките със запетая)."""
+    cleaned = re.sub(r"[^\d,.]", "", raw or "").replace(".", "")
+    m = re.match(r"^(\d+),?(\d{0,2})$", cleaned)
+    if not m:
+        return None
+    try:
+        value = float(f"{m.group(1)}.{m.group(2) or '0'}")
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+async def fetch_new_phone_price(client: httpx.AsyncClient, model: str) -> float | None:
+    """Най-ниската цена на нов телефон от този модел, или None ако не се продава.
+
+    Взима се най-ниската от съвпадащите оферти, защото таванът трябва да е
+    консервативен — по-ниската цена дава по-нисък таван.
+    """
+    shop_log = logger.bind(component="NETWORK")
+    url = NEW_PHONE_SHOP["url"].format(query=quote_plus(model))
+
+    try:
+        response = await client.get(url, headers=OLX_HEADERS, follow_redirects=True, timeout=15.0)
+        if response.status_code != 200:
+            shop_log.warning(f"[{NEW_PHONE_SHOP['name']}] HTTP {response.status_code} за '{model}'")
+            return None
+    except Exception as e:
+        shop_log.error(f"[{NEW_PHONE_SHOP['name']}] {type(e).__name__} за '{model}'")
+        return None
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    prices = []
+
+    for card in soup.select(NEW_PHONE_SHOP["card"]):
+        title_el = card.select_one(NEW_PHONE_SHOP["title"])
+        price_el = card.select_one(NEW_PHONE_SHOP["price"])
+        if not title_el or not price_el:
+            continue
+
+        name = re.sub(r"\s+", " ", title_el.get_text(" ", strip=True))
+        if not _looks_like_new_phone(name):
+            continue
+
+        # Моделът на офертата се разбира със същата функция и се сравнява
+        # точно. Сравняване по думи не става: „6“ се съдържа в „16“, а
+        # „iPhone 15 Pro“ се съдържа в „iPhone 15 Pro Max“ — и двете тихо
+        # вдигаха тавана с цената на съвсем друг апарат.
+        if extract_phone_model(name) != model:
+            continue
+
+        price = _parse_shop_price(price_el.get_text(" ", strip=True))
+        if price and price >= MIN_NEW_PHONE_PRICE:
+            prices.append(price)
+
+    if not prices:
+        shop_log.info(f"[{NEW_PHONE_SHOP['name']}] няма нов '{model}' — за него таван няма")
+        return None
+
+    return min(prices)
+
+
 PHONE_SITES = [
     {
         "name": "MobileSentrix EU",
@@ -775,12 +920,20 @@ async def search_all(category: str, query: str) -> dict:
         tasks = [search_site(client, s, query, search_terms) for s in sites]
         results = await asyncio.gather(*tasks)
 
+    # Моделът се закача тук, а не във всеки парсър поотделно — така важи за
+    # всички сайтове наведнъж. Ползва се за тавана на ремонта.
+    for site_result in results:
+        for item in site_result.get("items", []):
+            item["model"] = extract_phone_model(item.get("title", ""))
+
     return {"query": query, "category": category, "results": results}
 
 
 
 # FastAPI 
 app = FastAPI(title="AKS Price Checker")
+
+NO_CACHE = {"Cache-Control": "no-cache"}
 
 @app.on_event("startup")
 async def startup_event():
@@ -919,6 +1072,59 @@ class QuoteRequest(BaseModel):
     discount: float = 0.0
     manual_labor: float | None = None
 
+# Цените на нови телефони се менят рядко, а заявките към магазина са бавни —
+# затова кешът им е отделен от този на търсенето и с по-дълъг срок.
+NEW_PHONE_TTL = 6 * 3600
+_phone_price_cache: dict[str, tuple[float, float | None]] = {}
+
+
+async def cached_new_phone_price(client: httpx.AsyncClient, model: str) -> float | None:
+    entry = _phone_price_cache.get(model)
+    if entry and time.time() - entry[0] < NEW_PHONE_TTL:
+        return entry[1]
+
+    price = await fetch_new_phone_price(client, model)
+    _phone_price_cache[model] = (time.time(), price)
+    if len(_phone_price_cache) > 500:
+        oldest = min(_phone_price_cache, key=lambda k: _phone_price_cache[k][0])
+        _phone_price_cache.pop(oldest, None)
+    return price
+
+
+class PhonePricesRequest(BaseModel):
+    models: list[str] = Field(default_factory=list, max_length=40)
+
+
+@app.post("/api/phone-prices")
+async def api_phone_prices(req: PhonePricesRequest):
+    """Цена на нов телефон за всеки подаден модел — за тавана на ремонта.
+
+    Моделите се питат наведнъж и паралелно; липсващите се връщат като null,
+    което за фронтенда значи „за този модел таван няма“.
+    """
+    models = list(dict.fromkeys(m.strip() for m in req.models if m and m.strip()))
+    if not models:
+        return {"prices": {}}
+
+    api_log = logger.bind(component="API")
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        found = await asyncio.gather(
+            *[cached_new_phone_price(client, m) for m in models]
+        )
+
+    prices = dict(zip(models, found))
+    api_log.info(
+        f"[Pricing] Цени на нови телефони: {sum(p is not None for p in found)}"
+        f"/{len(models)} намерени"
+    )
+    return {"prices": prices}
+
+
+@app.get("/api/pricing/display-formula")
+async def pricing_display_formula():
+    """Параметрите на формулата за смяна на дисплей — фронтендът смята с тях."""
+    return pricing.display_formula_config()
+
 @app.get("/api/pricing/catalog")
 async def pricing_catalog():
     """Операции, устройства и въпроси за състоянието — за падащите менюта."""
@@ -951,7 +1157,22 @@ async def pricing_quote(req: QuoteRequest):
 
 @app.get("/")
 async def index():
-    return FileResponse("static/index.html")
+    return FileResponse("static/index.html", headers=NO_CACHE)
 
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+class NoCacheStaticFiles(StaticFiles):
+    """Статиката се презвалидира при всяка заявка.
+
+    Без това браузърът може да държи стар app.js срещу нов index.html. Един
+    липсващ елемент гърми целия скрипт на първия ред и страницата спира да
+    работи — точно това стана при махането на калкулатора. "no-cache" не
+    забранява кеша: ETag-ът пак връща 304, така че цената е една заявка.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = NO_CACHE["Cache-Control"]
+        return response
+
+
+app.mount("/static", NoCacheStaticFiles(directory="static"), name="static")

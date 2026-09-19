@@ -4,7 +4,7 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>AKS Price Checker</title>
-        <link rel="stylesheet" href="/static/assets/css/style.css">
+        <link rel="stylesheet" href="/static/assets/css/style.css?v=2">
     </head>
     <body>
         <div class="wrap">
@@ -12,11 +12,6 @@
                 <h1>AKS <span>Price Checker</span></h1>
                 <div class="sub">търсене при партньори — паралелно, всички сайтове наведнъж</div>
             </header>
-
-            <div class="modes" role="group" aria-label="Режим">
-                <button id="modeSearch" class="active">Търсене на части</button>
-                <button id="modeCalc">Калкулатор за ремонт</button>
-            </div>
 
             <section id="viewSearch">
                 <div class="searchbar">
@@ -36,55 +31,6 @@
                 <div class="hint" id="hint">Въведи модел и натисни „Търси“ — резултатите от всички сайтове идват заедно за няколко секунди.</div>
             </section>
 
-            <section id="viewCalc" hidden>
-                <div class="calc">
-                    <div class="calc-row">
-                        <div class="calc-field grow">
-                            <label for="calcDevice">Устройство</label>
-                            <select id="calcDevice"></select>
-                        </div>
-                    </div>
-
-                    <fieldset class="calc-group">
-                        <legend>Какъв е ремонтът?</legend>
-                        <div class="chk-grid" id="calcRepairs"></div>
-                    </fieldset>
-
-                    <fieldset class="calc-group">
-                        <legend>Състояние на устройството</legend>
-                        <div class="chk-list" id="calcConditions"></div>
-                    </fieldset>
-
-                    <div class="calc-row">
-                        <div class="calc-field">
-                            <label for="calcParts">Части (€)</label>
-                            <input type="number" id="calcParts" min="0" step="0.01" value="0">
-                        </div>
-                        <div class="calc-field">
-                            <label for="calcExtras">Допълнителни услуги (€)</label>
-                            <input type="number" id="calcExtras" min="0" step="0.01" value="0">
-                        </div>
-                        <div class="calc-field">
-                            <label for="calcDiscount">Отстъпка (€)</label>
-                            <input type="number" id="calcDiscount" min="0" step="0.01" value="0">
-                        </div>
-                        <div class="calc-field">
-                            <label for="calcManual">Ръчна цена на труда (€)</label>
-                            <input type="number" id="calcManual" min="0" step="1" placeholder="по подразбиране">
-                        </div>
-                    </div>
-
-                    <div class="calc-actions">
-                        <button class="go" id="calcGo">Изчисли цената</button>
-                        <button class="cp-secondary" id="calcReset">Изчисти</button>
-                    </div>
-
-                    <div class="calc-msg" id="calcMsg"></div>
-                </div>
-
-                <div id="calcResult"></div>
-            </section>
-
             <div class="cp-modal" id="cpModal" hidden>
                 <div class="cp-box">
                     <h3>CellPhone BG — вход за търговци</h3>
@@ -100,6 +46,6 @@
             </div>
         </div>
 
-        <script src="/static/assets/js/app.js"></script>
+        <script src="/static/assets/js/app.js?v=2"></script>
     </body>
 </html>

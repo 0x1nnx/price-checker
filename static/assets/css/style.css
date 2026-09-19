@@ -54,34 +54,6 @@ header .sub {
     font-size: 0.85rem;
 }
 
-/* --- превключвател на режим --- */
-
-.modes {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 14px;
-}
-
-.modes button {
-    background: var(--panel);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 9px 16px;
-    font-size: 0.9rem;
-    cursor: pointer;
-}
-
-.modes button:hover {
-    color: var(--text);
-}
-
-.modes button.active {
-    background: var(--accent-dim);
-    border-color: var(--accent-dim);
-    color: #fff;
-}
-
 /* --- търсачка --- */
 
 .searchbar {
@@ -460,273 +432,6 @@ input:focus-visible {
     color: var(--err);
 }
 
-/* --- калкулатор за ремонт --- */
-
-.calc {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.calc-row {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.calc-field {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    flex: 1;
-    min-width: 150px;
-}
-
-.calc-field.grow {
-    flex: 1 1 100%;
-}
-
-.calc-field label {
-    font-size: 0.78rem;
-    color: var(--muted);
-}
-
-.calc-field input,
-.calc-field select {
-    background: var(--bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 0.95rem;
-    font-family: var(--sans);
-    outline: none;
-}
-
-.calc-field input:focus,
-.calc-field select:focus {
-    border-color: var(--accent-dim);
-}
-
-.calc-group {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px;
-}
-
-.calc-group legend {
-    padding: 0 8px;
-    font-size: 0.82rem;
-    color: var(--accent);
-}
-
-.chk-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-    gap: 8px;
-}
-
-.chk-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.chk {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    font-size: 0.9rem;
-    cursor: pointer;
-}
-
-.chk:hover {
-    border-color: var(--accent-dim);
-}
-
-.chk input {
-    accent-color: var(--accent);
-    width: 16px;
-    height: 16px;
-    flex: none;
-    cursor: pointer;
-}
-
-.chk:has(input:checked) {
-    border-color: var(--accent);
-    background: var(--panel-2);
-}
-
-.chk-main {
-    flex: 1;
-}
-
-.chk-meta {
-    font-family: var(--mono);
-    font-size: 0.72rem;
-    color: var(--muted);
-    flex: none;
-}
-
-.calc-actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.calc-msg {
-    font-family: var(--mono);
-    font-size: 0.82rem;
-    color: var(--err);
-    min-height: 1.2em;
-}
-
-/* --- резултат от калкулатора --- */
-
-.quote-body {
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.quote-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.88rem;
-}
-
-.quote-table th {
-    text-align: left;
-    font-weight: 600;
-    font-size: 0.74rem;
-    color: var(--muted);
-    padding: 0 10px 8px;
-    border-bottom: 1px solid var(--border);
-}
-
-.quote-table td {
-    padding: 9px 10px;
-    border-bottom: 1px solid var(--border);
-}
-
-.quote-table tr:last-child td {
-    border-bottom: none;
-}
-
-.quote-table .num {
-    text-align: right;
-    font-family: var(--mono);
-}
-
-.quote-table .strong {
-    color: var(--accent);
-    font-weight: 700;
-}
-
-.cap {
-    margin-left: 8px;
-    font-family: var(--mono);
-    font-size: 0.68rem;
-    border-radius: 20px;
-    padding: 2px 8px;
-}
-
-.cap.over {
-    background: rgba(255, 107, 122, 0.12);
-    color: var(--err);
-}
-
-.cap.min {
-    background: rgba(70, 209, 154, 0.12);
-    color: var(--ok);
-}
-
-.quote-conds {
-    list-style: none;
-    font-size: 0.82rem;
-    color: var(--muted);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.quote-conds b {
-    color: var(--text);
-    font-family: var(--mono);
-}
-
-.quote-sums {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 10px;
-}
-
-.quote-sums div {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-}
-
-.quote-sums span {
-    font-size: 0.74rem;
-    color: var(--muted);
-}
-
-.quote-sums b {
-    font-family: var(--mono);
-    font-size: 0.95rem;
-}
-
-.quote-warn {
-    background: rgba(255, 107, 122, 0.08);
-    border: 1px solid rgba(255, 107, 122, 0.35);
-    border-radius: 8px;
-    padding: 12px 14px;
-    font-size: 0.85rem;
-}
-
-.quote-warn b {
-    color: var(--err);
-}
-
-.quote-warn ul {
-    margin: 6px 0 0 18px;
-    color: var(--muted);
-}
-
-.quote-final {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    background: var(--panel-2);
-    border: 1px solid var(--accent-dim);
-    border-radius: 8px;
-    padding: 14px 16px;
-}
-
-.quote-final span {
-    font-size: 0.9rem;
-    color: var(--muted);
-}
-
-.quote-final b {
-    font-family: var(--mono);
-    font-size: 1.5rem;
-    color: var(--accent);
-}
 
 .hint {
     margin-top: 40px;
@@ -765,4 +470,57 @@ input:focus-visible {
             transform: translateY(0);
         }
     }
+}
+
+
+/* --- цена на частта + цена на ремонта --- */
+
+.item-prices {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+/* Изчислената цена на ремонта — по-тиха от цената на частта, за да не се
+   бърка с нея. Формулата: 2 × част + 30 € + 10% от частта. */
+.repair-badge {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    background: rgba(124, 108, 255, 0.12);
+    border: 1px solid rgba(124, 108, 255, 0.4);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.85rem;
+    padding: 5px 11px;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+
+.repair-badge-label {
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+@media (max-width: 560px) {
+    .item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .item-prices {
+        align-self: stretch;
+    }
+}
+
+/* Ремонт, ограничен от тавана (половината от цената на нов телефон) */
+.repair-badge.capped {
+    background: rgba(255, 176, 32, 0.12);
+    border-color: rgba(255, 176, 32, 0.45);
+    color: #ffb020;
 }

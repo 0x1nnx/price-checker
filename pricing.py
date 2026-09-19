@@ -13,6 +13,15 @@
 
     крайна цена = части + труд + допълнителни услуги − отстъпка
 
+Изключение — самостоятелна смяна на дисплей:
+    крайна цена = множител × дисплей + 30 € + 10% от дисплея
+    множителят зависи от класа на дисплея:
+        до 50 €     → 2.0   (дисплей + 100%)
+        50–100 €    → 1.5   (дисплей + 50%)
+        над 100 €   → 1.1   (дисплей + 10%)
+    крайна цена = не по-малко от 50 €
+    (коефициентите за устройство и състояние и закръглянето до 5 € отпадат)
+
 Каталозите по-долу са нарочно обикновени речници, както конфигурацията на
 сайтовете в app.py. Ако някога станат твърде много за ръчна поддръжка,
 преминават 1:1 към таблиците repair_types / device_models.
@@ -61,6 +70,11 @@ REPAIR_TYPES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Временно достъпни операции. Останалите остават дефинирани по-горе, но не
+# се предлагат в калкулатора и не се приемат от API-то. За да се върне някоя,
+# се добавя ключът ѝ тук.
+ENABLED_REPAIRS: list[str] = ["display"]
+
 # ---------------------------------------------------------------------------
 # 2. Коефициент за сложност на устройството
 # ---------------------------------------------------------------------------
@@ -93,6 +107,130 @@ MULTI_REPAIR_TAIL_WEIGHT = 0.30
 
 ROUND_TO = 5           # закръгляне на труда до 5 €
 MANUAL_OVERRIDE_PCT = 0.10  # ръчна корекция без одобрение: ±10%
+
+# ---------------------------------------------------------------------------
+# 4. Фиксирана формула за самостоятелна смяна на дисплей
+#    Крайната цена се определя директно от цената на дисплея, а не от базовия
+#    труд. Всички класове имат една и съща форма:
+#
+#        крайна цена = множител × дисплей + 30 € труд + 10% от дисплея
+#
+#    и се различават само по множителя — колкото по-скъп е дисплеят, толкова
+#    по-малко се надгражда върху него:
+#
+#        до 50 €        евтин клас    2 × дисплей   (= дисплей + 100%)
+#        50–100 €       среден клас   1.5 × дисплей (= дисплей + 50%)
+#        над 100 €      скъп клас     1.1 × дисплей (= дисплей + 10%)
+#
+#    Коефициентите за устройство и състояние не участват — затова формулата
+#    важи само когато единствената избрана операция е смяна на дисплей.
+# ---------------------------------------------------------------------------
+DISPLAY_FORMULA_REPAIR = "display"
+DISPLAY_FORMULA_FIXED = 30.0      # € труд, еднакъв за всички класове
+DISPLAY_FORMULA_PCT = 0.10        # 10% от цената на дисплея, върху всичко
+DISPLAY_FORMULA_MIN_PRICE = 50.0  # € — под този праг ремонт не се пуска
+
+# Таван: ремонтът не може да струва повече от половината от цената на нов
+# телефон от същия модел. Цената на новия телефон се тегли от магазин
+# (виж fetch_new_phone_price в app.py) и се подава отвън — тук стои само
+# правилото. Ако цена не е намерена, таван просто няма.
+DISPLAY_MAX_PRICE_PCT = 0.50
+
+# max_part = None означава „без горна граница“. Класовете се четат отгоре
+# надолу и печели първият, в чиято граница влиза цената на дисплея.
+DISPLAY_TIERS: list[dict[str, Any]] = [
+    {"key": "budget",  "name": "евтин клас",  "max_part": 50.0,  "multiplier": 2.0},
+    {"key": "mid",     "name": "среден клас", "max_part": 100.0, "multiplier": 1.5},
+    {"key": "premium", "name": "скъп клас",   "max_part": None,  "multiplier": 1.1},
+]
+
+
+def display_tier(part_price: float) -> dict[str, Any] | None:
+    """Класът, в който попада дисплей с тази цена."""
+    if not part_price > 0:
+        return None
+    for tier in DISPLAY_TIERS:
+        if tier["max_part"] is None or part_price <= tier["max_part"]:
+            return tier
+    return None
+
+# Разпознаване дали намерената част наистина е дисплей. Много аксесоари носят
+# думата „дисплей“ в заглавието си („протектор за целия дисплей“, „стикер за
+# дисплей“), а за тях цена на ремонт няма смисъл.
+#
+# Отрицателният списък е водещ: заглавие с „протектор“ отпада, дори да съдържа
+# „дисплей“. Нарочно НЕ съдържа „рамка“ и „стъкло“ — истинските дисплеи често
+# се продават „с рамка“ или „Тъч скрийн + Рамка“ и щяха да отпаднат погрешно.
+DISPLAY_KEYWORDS = ["дисплей", "екран", "display", "lcd", "oled", "screen"]
+
+NON_DISPLAY_KEYWORDS = [
+    # аксесоари върху дисплея, не самият дисплей
+    "протектор", "стикер", "лепенка", "лепило", "фолио", "тиксо",
+    "protector", "sticker", "adhesive", "oca",
+    # калъфи и кутии
+    "калъф", "кейс", "case",
+    # консумативи и инструменти за ремонт
+    "поляризатор", "сепаратор", "машина", "инструмент",
+    "polarizer", "separator", "machine", "tool",
+    # други части, които могат да споменат дисплея
+    "заден капак", "back cover",
+    "конектор", "конектори", "шлейф", "флекс",
+    "connector", "pcb",
+]
+
+
+def display_max_price(new_phone_price: float | None) -> float | None:
+    """Таванът на ремонта: половината от цената на нов телефон, ако я знаем."""
+    if not new_phone_price or new_phone_price <= 0:
+        return None
+    return round(new_phone_price * DISPLAY_MAX_PRICE_PCT, 2)
+
+
+def display_repair_price(
+    part_price: float, new_phone_price: float | None = None
+) -> float | None:
+    """Крайна цена на ремонта по цената на дисплея, или None при невалидна цена.
+
+    Редът е важен: първо формулата по класове, после долният праг, и накрая
+    таванът. Така таван под 50 € печели над минимума — при евтин телефон е
+    по-логично ремонтът да е под минимума, отколкото да мине над половината
+    от стойността на самия телефон.
+    """
+    tier = display_tier(part_price)
+    if tier is None:
+        return None
+    price = (
+        part_price * tier["multiplier"]
+        + DISPLAY_FORMULA_FIXED
+        + part_price * DISPLAY_FORMULA_PCT
+    )
+    price = max(price, DISPLAY_FORMULA_MIN_PRICE)
+
+    cap = display_max_price(new_phone_price)
+    if cap is not None:
+        price = min(price, cap)
+    return round(price, 2)
+
+
+def display_formula_config() -> dict[str, Any]:
+    """Параметрите на формулата — фронтендът смята с тях върху цените от търсенето."""
+    return {
+        "tiers": DISPLAY_TIERS,
+        "fixed": DISPLAY_FORMULA_FIXED,
+        "pct": DISPLAY_FORMULA_PCT,
+        "min_price": DISPLAY_FORMULA_MIN_PRICE,
+        "max_price_pct": DISPLAY_MAX_PRICE_PCT,
+        "keywords": DISPLAY_KEYWORDS,
+        "exclude_keywords": NON_DISPLAY_KEYWORDS,
+    }
+
+
+def display_formula_applies(repairs: list[str], parts_total: float) -> bool:
+    """Формулата важи само при самостоятелна смяна на дисплей с известна цена."""
+    return (
+        list(dict.fromkeys(repairs)) == [DISPLAY_FORMULA_REPAIR]
+        and parts_total > 0
+    )
 
 
 def round_to_nearest(value: float, step: int = ROUND_TO) -> int:
@@ -154,6 +292,11 @@ def quote(
     if unknown:
         raise ValueError(f"Непозната операция: {', '.join(unknown)}")
 
+    disabled = [r for r in repairs if r not in ENABLED_REPAIRS]
+    if disabled:
+        names = ", ".join(REPAIR_TYPES[r]["name"] for r in disabled)
+        raise ValueError(f"Операцията не е достъпна в момента: {names}")
+
     device_row = DEVICE_MODELS.get(device) or DEVICE_MODELS["generic"]
     device_f = device_row["factor"]
     cond_f, cond_applied = condition_factor(conditions or [])
@@ -170,13 +313,39 @@ def quote(
 
     suggested_labor = round_to_nearest(sum(l["applied_labor"] for l in lines))
 
+    # Самостоятелна смяна на дисплей до 50 € част минава по фиксираната
+    # формула: крайна цена = 2 × дисплей + 30 € + 10% от дисплея.
+    # Трудът се извежда обратно от нея (крайна цена − част), за да остане
+    # разбивката последователна. Тук нарочно няма закръгляне до 5 €, иначе
+    # крайната цена нямаше да излиза точно по формулата.
+    formula: dict[str, Any] | None = None
+    if display_formula_applies(repairs, parts_total):
+        repair_price = display_repair_price(parts_total)
+        suggested_labor = round(repair_price - parts_total, 2)
+        tier = display_tier(parts_total)
+        formula = {
+            "key": tier["key"],
+            "name": f"Смяна на дисплей — {tier['name']}",
+            "part_price": round(parts_total, 2),
+            "multiplier": tier["multiplier"],
+            "fixed": DISPLAY_FORMULA_FIXED,
+            "pct": DISPLAY_FORMULA_PCT,
+            "repair_price": repair_price,
+            "min_price": DISPLAY_FORMULA_MIN_PRICE,
+            "at_min": repair_price == DISPLAY_FORMULA_MIN_PRICE,
+            "labor": suggested_labor,
+        }
+
     approval_reasons = []
-    for line in lines:
-        if line["over_max"]:
-            approval_reasons.append(
-                f"{line['name']}: {line['raw_labor']:.2f} € над максимума "
-                f"({REPAIR_TYPES[line['repair']]['max_labor']} €)"
-            )
+    # При формулата трудът не идва от base_labor, така че таванът на
+    # операцията не е повод за одобрение.
+    if formula is None:
+        for line in lines:
+            if line["over_max"]:
+                approval_reasons.append(
+                    f"{line['name']}: {line['raw_labor']:.2f} € над максимума "
+                    f"({REPAIR_TYPES[line['repair']]['max_labor']} €)"
+                )
 
     # Ръчна корекция — свободна в рамките на ±10%, извън тях иска одобрение.
     lo = round_to_nearest(suggested_labor * (1 - MANUAL_OVERRIDE_PCT))
@@ -198,6 +367,7 @@ def quote(
         "lines": lines,
         "estimated_minutes": sum(l["minutes"] for l in lines),
         "suggested_labor": suggested_labor,
+        "formula": formula,
         "manual_range": [lo, hi],
         "labor": final_labor,
         "parts_total": round(parts_total, 2),
@@ -212,9 +382,12 @@ def quote(
 def catalog() -> dict[str, Any]:
     """Каталозите за фронтенда (падащи менюта и въпросите за състоянието)."""
     return {
-        "repairs": [{"key": k, **v} for k, v in REPAIR_TYPES.items()],
+        "repairs": [
+            {"key": k, **REPAIR_TYPES[k]} for k in ENABLED_REPAIRS if k in REPAIR_TYPES
+        ],
         "devices": [{"key": k, **v} for k, v in DEVICE_MODELS.items()],
         "conditions": [{"key": k, **v} for k, v in CONDITION_FLAGS.items()],
         "round_to": ROUND_TO,
         "manual_override_pct": MANUAL_OVERRIDE_PCT,
+        "display_formula": {"repair": DISPLAY_FORMULA_REPAIR, **display_formula_config()},
     }
