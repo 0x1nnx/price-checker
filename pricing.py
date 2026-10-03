@@ -22,6 +22,13 @@
     крайна цена = не по-малко от 50 €
     (коефициентите за устройство и състояние и закръглянето до 5 € отпадат)
 
+Изключение — самостоятелна смяна на батерия:
+    крайна цена = 2 × батерия + фиксирано + процент от батерията
+        до 20 €     → 2 × батерия + 20 € + 20%
+        20–35 €     → 2 × батерия + 15 € + 10%
+        над 35 €    → 2 × батерия + 10 €
+    (без минимум и без таван спрямо нов телефон)
+
 Каталозите по-долу са нарочно обикновени речници, както конфигурацията на
 сайтовете в app.py. Ако някога станат твърде много за ръчна поддръжка,
 преминават 1:1 към таблиците repair_types / device_models.
@@ -73,7 +80,7 @@ REPAIR_TYPES: dict[str, dict[str, Any]] = {
 # Временно достъпни операции. Останалите остават дефинирани по-горе, но не
 # се предлагат в калкулатора и не се приемат от API-то. За да се върне някоя,
 # се добавя ключът ѝ тук.
-ENABLED_REPAIRS: list[str] = ["display"]
+ENABLED_REPAIRS: list[str] = ["display", "battery"]
 
 # ---------------------------------------------------------------------------
 # 2. Коефициент за сложност на устройството
@@ -233,6 +240,90 @@ def display_formula_applies(repairs: list[str], parts_total: float) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# 5. Фиксирана формула за самостоятелна смяна на батерия
+#    Множителят е еднакъв (2 × батерия), а класовете се различават по
+#    фиксираната сума и процента от цената на батерията:
+#
+#        до 20 €        евтин клас    2 × батерия + 20 € + 20% от батерията
+#        20–35 €        среден клас   2 × батерия + 15 € + 10% от батерията
+#        над 35 €       висок клас    2 × батерия + 10 €
+#
+#    За разлика от дисплея няма минимум и няма таван спрямо нов телефон.
+# ---------------------------------------------------------------------------
+BATTERY_FORMULA_REPAIR = "battery"
+
+# Същата логика като DISPLAY_TIERS: max_part = None е „без горна граница“,
+# печели първият клас, в чиято граница влиза цената.
+BATTERY_TIERS: list[dict[str, Any]] = [
+    {"key": "budget",  "name": "евтин клас",  "max_part": 20.0, "multiplier": 2.0, "fixed": 20.0, "pct": 0.20},
+    {"key": "mid",     "name": "среден клас", "max_part": 35.0, "multiplier": 2.0, "fixed": 15.0, "pct": 0.10},
+    {"key": "premium", "name": "висок клас",  "max_part": None, "multiplier": 2.0, "fixed": 10.0, "pct": 0.0},
+]
+
+# Като при дисплея — отрицателният списък е водещ. Отпадат капаци, лепенки,
+# конектори и външни батерии, които носят думата „батерия“ в заглавието.
+BATTERY_KEYWORDS = ["батерия", "battery"]
+
+# Капакът се изключва само като израз („капак батерия“, „заден капак“), не
+# като дума — истинските батерии често се продават „с предпазен капак и
+# стикер“ и щяха да отпаднат погрешно.
+NON_BATTERY_KEYWORDS = [
+    # капаци и лепенки около батерията
+    "капак батерия", "капак на батерия", "капак за батерия", "заден капак",
+    "задно стъкло", "cover", "лепенка", "лепило", "стикер за", "тиксо",
+    "adhesive", "sticker",
+    # конектори и платки
+    "конектор", "шлейф", "флекс", "платка", "кабел", "адаптер",
+    "connector", "flex", "pcb", "motherboard", "board", "cable", "adapter",
+    # външни батерии, зарядни и калъфи
+    "външна", "power bank", "powerbank", "зарядно", "charger",
+    "калъф", "кейс", "case",
+    # инструменти и тестери
+    "инструмент", "тестер", "tool", "tester",
+]
+
+
+def battery_tier(part_price: float) -> dict[str, Any] | None:
+    """Класът, в който попада батерия с тази цена."""
+    if not part_price > 0:
+        return None
+    for tier in BATTERY_TIERS:
+        if tier["max_part"] is None or part_price <= tier["max_part"]:
+            return tier
+    return None
+
+
+def battery_repair_price(part_price: float) -> float | None:
+    """Крайна цена на ремонта по цената на батерията, или None при невалидна цена."""
+    tier = battery_tier(part_price)
+    if tier is None:
+        return None
+    price = (
+        part_price * tier["multiplier"]
+        + tier["fixed"]
+        + part_price * tier["pct"]
+    )
+    return round(price, 2)
+
+
+def battery_formula_config() -> dict[str, Any]:
+    """Параметрите на формулата — фронтендът смята с тях върху цените от търсенето."""
+    return {
+        "tiers": BATTERY_TIERS,
+        "keywords": BATTERY_KEYWORDS,
+        "exclude_keywords": NON_BATTERY_KEYWORDS,
+    }
+
+
+def battery_formula_applies(repairs: list[str], parts_total: float) -> bool:
+    """Формулата важи само при самостоятелна смяна на батерия с известна цена."""
+    return (
+        list(dict.fromkeys(repairs)) == [BATTERY_FORMULA_REPAIR]
+        and parts_total > 0
+    )
+
+
 def round_to_nearest(value: float, step: int = ROUND_TO) -> int:
     """Закръгляне нагоре при .5 (round() в Python закръгля 2.5 -> 2)."""
     return int(math.floor(value / step + 0.5) * step)
@@ -335,6 +426,23 @@ def quote(
             "at_min": repair_price == DISPLAY_FORMULA_MIN_PRICE,
             "labor": suggested_labor,
         }
+    elif battery_formula_applies(repairs, parts_total):
+        # Същият подход като при дисплея: трудът = крайна цена − част.
+        repair_price = battery_repair_price(parts_total)
+        suggested_labor = round(repair_price - parts_total, 2)
+        tier = battery_tier(parts_total)
+        formula = {
+            "key": tier["key"],
+            "name": f"Смяна на батерия — {tier['name']}",
+            "part_price": round(parts_total, 2),
+            "multiplier": tier["multiplier"],
+            "fixed": tier["fixed"],
+            "pct": tier["pct"],
+            "repair_price": repair_price,
+            "min_price": None,
+            "at_min": False,
+            "labor": suggested_labor,
+        }
 
     approval_reasons = []
     # При формулата трудът не идва от base_labor, така че таванът на
@@ -390,4 +498,5 @@ def catalog() -> dict[str, Any]:
         "round_to": ROUND_TO,
         "manual_override_pct": MANUAL_OVERRIDE_PCT,
         "display_formula": {"repair": DISPLAY_FORMULA_REPAIR, **display_formula_config()},
+        "battery_formula": {"repair": BATTERY_FORMULA_REPAIR, **battery_formula_config()},
     }

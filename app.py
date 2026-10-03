@@ -1125,6 +1125,11 @@ async def pricing_display_formula():
     """Параметрите на формулата за смяна на дисплей — фронтендът смята с тях."""
     return pricing.display_formula_config()
 
+@app.get("/api/pricing/battery-formula")
+async def pricing_battery_formula():
+    """Параметрите на формулата за смяна на батерия — фронтендът смята с тях."""
+    return pricing.battery_formula_config()
+
 @app.get("/api/pricing/catalog")
 async def pricing_catalog():
     """Операции, устройства и въпроси за състоянието — за падащите менюта."""

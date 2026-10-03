@@ -72,25 +72,30 @@ $("cpLogout").onclick = async () => {
 // Формулата живее в pricing.py; тук се дърпат само параметрите ѝ, за да няма
 // два записа на едни и същи числа.
 let displayFormula = null;
+let batteryFormula = null;
 
-async function loadDisplayFormula() {
+async function loadFormulas() {
     try {
-        const r = await fetch("/api/pricing/display-formula");
-        if (r.ok) displayFormula = await r.json();
+        const [d, b] = await Promise.all([
+            fetch("/api/pricing/display-formula"),
+            fetch("/api/pricing/battery-formula"),
+        ]);
+        if (d.ok) displayFormula = await d.json();
+        if (b.ok) batteryFormula = await b.json();
     } catch {}
 }
-loadDisplayFormula();
+loadFormulas();
 
 /**
- * Дали намереният резултат наистина е дисплей.
+ * Дали заглавието отговаря на ключовите думи на дадена формула.
  *
- * Много аксесоари носят думата „дисплей“ в заглавието си — протектори,
- * стикери, лепенки — а за тях цена на ремонт е безсмислена. Затова
- * отрицателният списък е водещ: щом заглавието съдържа някоя от неговите
- * думи, резултатът отпада независимо от останалото.
+ * Много аксесоари носят думата „дисплей“ или „батерия“ в заглавието си —
+ * протектори, лепенки, капаци — а за тях цена на ремонт е безсмислена.
+ * Затова отрицателният списък е водещ: щом заглавието съдържа някоя от
+ * неговите думи, резултатът отпада независимо от останалото.
  */
-function isDisplayItem(title) {
-    if (!displayFormula || !title) return false;
+function matchesFormula(formula, title) {
+    if (!formula || !title) return false;
     const low = title.toLowerCase();
 
     // Латинските думи се търсят по граница, за да не улучат части от
@@ -100,8 +105,50 @@ function isDisplayItem(title) {
         ? low.includes(word)
         : new RegExp(`\\b${word}\\b`, "i").test(low);
 
-    if (displayFormula.exclude_keywords.some(hit)) return false;
-    return displayFormula.keywords.some(hit);
+    if (formula.exclude_keywords.some(hit)) return false;
+    return formula.keywords.some(hit);
+}
+
+const isDisplayItem = title => matchesFormula(displayFormula, title);
+const isBatteryItem = title => matchesFormula(batteryFormula, title);
+
+/**
+ * Крайна цена на ремонта за батерия с дадена цена на частта:
+ *     2 × част + фиксирано + процент от частта
+ * до 20 € → +20 € +20%, до 35 € → +15 € +10%, над 35 € → +10 €.
+ * Без минимум и без таван. Връща null, ако частта е без валидна цена.
+ */
+function batteryTier(partPrice) {
+    if (!batteryFormula || !(partPrice > 0) || !isFinite(partPrice)) return null;
+    return batteryFormula.tiers.find(
+        t => t.max_part === null || partPrice <= t.max_part
+    ) || null;
+}
+
+function batteryRepairPrice(partPrice) {
+    const tier = batteryTier(partPrice);
+    if (!tier) return null;
+    return partPrice * tier.multiplier + tier.fixed + partPrice * tier.pct;
+}
+
+/**
+ * Подсказката на баджа: за какъв ремонт е цената и как точно е сметната
+ * за тази част, напр. „Смяна на батерия (евтин клас): 2 × 11.70 € + 20 € +
+ * 20% от частта = 45.74 €“.
+ */
+function repairExplanation(it, price) {
+    const p = it._numericPrice;
+    const pct = share => share ? ` + ${Math.round(share * 100)}% от частта` : "";
+    if (it._isDisplay) {
+        const t = displayTier(p);
+        let text = `Смяна на дисплей (${t.name}): ${t.multiplier} × ${p.toFixed(2)} €` +
+                   ` + ${displayFormula.fixed} €${pct(displayFormula.pct)}`;
+        if (price <= displayFormula.min_price + 0.005) text += `, минимум ${displayFormula.min_price} €`;
+        return `${text} = ${price.toFixed(2)} €`;
+    }
+    const t = batteryTier(p);
+    return `Смяна на батерия (${t.name}): ${t.multiplier} × ${p.toFixed(2)} €` +
+           ` + ${t.fixed} €${pct(t.pct)} = ${price.toFixed(2)} €`;
 }
 
 /**
@@ -172,16 +219,17 @@ async function applyPriceCaps(items) {
     }
 
     for (const it of items) {
-        if (!it._badge) continue;
+        // Таванът важи само за дисплеи — батериите остават по формулата.
+        if (!it._badge || !it._isDisplay) continue;
         const capped = repairPrice(it._numericPrice, newPhonePrices[it.model]);
         if (capped === null) continue;
         const wasCapped = capped < it._repairUncapped - 0.005;
         it._badge.innerHTML =
-            `<span class="repair-badge-label">ремонт</span>${capped.toFixed(2)} €`;
+            `<span class="repair-badge-label">${it._repairLabel}</span>${capped.toFixed(2)} €`;
         it._badge.classList.toggle("capped", wasCapped);
         it._badge.title = wasCapped
-            ? `Таван: половината от цената на нов ${it.model} (${newPhonePrices[it.model].toFixed(2)} €)`
-            : "Смяна на дисплей: множител × част + 30 € + 10% от частта";
+            ? `Смяна на дисплей — таван: половината от цената на нов ${it.model} (${newPhonePrices[it.model].toFixed(2)} €)`
+            : repairExplanation(it, capped);
     }
 }
 
@@ -381,14 +429,19 @@ function render(data) {
                 : '';
 
             it._isDisplay = isDisplayItem(it._displayTitle);
-            // Рисува се без таван; той се прилага в applyPriceCaps, щом
-            // цените на новите телефони пристигнат.
-            const repair = it._isDisplay ? repairPrice(it._numericPrice) : null;
+            it._isBattery = !it._isDisplay && isBatteryItem(it._displayTitle);
+            // Дисплеят се рисува без таван; той се прилага в applyPriceCaps,
+            // щом цените на новите телефони пристигнат.
+            const repair = it._isDisplay ? repairPrice(it._numericPrice)
+                         : it._isBattery ? batteryRepairPrice(it._numericPrice)
+                         : null;
             it._repairUncapped = repair;
 
+            // Етикетът казва за какъв ремонт е цената, а подсказката — как е сметната.
+            it._repairLabel = it._isDisplay ? "смяна на дисплей" : "смяна на батерия";
             const repairBadge = repair !== null
-                ? `<span class="repair-badge" title="Смяна на дисплей: множител × част + 30 € + 10% от частта">
-                       <span class="repair-badge-label">ремонт</span>${repair.toFixed(2)} €
+                ? `<span class="repair-badge" title="${esc(repairExplanation(it, repair))}">
+                       <span class="repair-badge-label">${it._repairLabel}</span>${repair.toFixed(2)} €
                    </span>`
                 : '';
 
